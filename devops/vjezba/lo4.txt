@@ -1,0 +1,367 @@
+LO4
+Q: Create a Deployment named web running nginx:1.25 with 3 replicas using a single imperative kubectl create
+deployment command, then export its generated YAML to a file.
+a: kubectl create deployment web --image=nginx:1.25 --replicas=3 --dry-run=client -o yaml > web-deployment.yaml
+
+Q: 
+Enable pulling images from DockerHub as an authenticated user to lower the chance of hitting the
+pull limit. What kind of resource do you need to create?
+A: Create a Kubernetes Secret of type image pull secret (docker-registry / kubernetes.io/dockerconfigjson). This allows Kubernetes to authenticate to Docker Hub and reduces the likelihood of hitting anonymous pull rate limits.
+
+Q: Scale web from 3 to 5 replicas two different ways — once with kubectl scale, once by editing the manifest — and show the ReplicaSet that results
+A: kubectl scale deployment web --replicas=5
+kubectl get deployment web
+
+menifest: edit web deployment file
+
+Q: Perform a rolling update of web from nginx:1.25 to nginx:1.27 and watch it with kubectl rollout status.
+A: kubectl set image deployment/web nginx=docker.io/library/nginx:1.27 
+to watch: kubectl rollout status deployment/web
+
+Q: View a Deployment's rollout history and roll back to the previous revision. Explain what the CHANGECAUSE column shows and how to populate it
+A: kubectl rollout history deployment/web
+change cause is visual changes of update app version. If it is none, then it weas not tagged, to tag it kubectl annotate deployment/web kubernetes.io/change-cause="Upgrade nginx 1.25 -> 1.27"  --overwrite
+rollut nazad: kubectl rollout undo deployment/web dela sam nesmijes sjebat haha
+
+Q: Set the update strategy to RollingUpdate with maxSurge: 1 and maxUnavailable: 0, and explain the effect on availability during an update.
+A: kubectl edit deployment web
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+Q: Switch a Deployment's strategy to Recreate and describe a concrete scenario where this is required instead of RollingUpdate. 
+A: kubectl edit deployments/web  
+"spec":{
+    "strategy":{
+      "type":"Recreate"
+Recreate turns off all old Pods and create new. Example: applicaton uses one database but it can not use older and newer version of db in the same time. disadv: it could be a bit of downtime
+
+Q: Add CPU/memory requests and limits to a Deployment's container and verify they appear in the running pod spec
+
+A: kubectl set resources deployment/web   -c nginx   --requests=cpu=100m,memory=128Mi   --limits=cpu=500m,memory=256Mi 
+verify: kubectl get pods i onda kubectl describe pod <pod-name>
+
+Q: Set revisionHistoryLimit: 3 and explain how it affects your ability to roll back and how many old ReplicaSets are kept.
+A: edit in kubectl edit deployments/web and set revisionHistoryLimit: to 3. it limits the number of old ReplicaSets retained for rollback. Only the three most recent previous revisions are kept. Older ReplicaSets are removed, so rollback is only possible to revisions that still exist.
+
+Q:Set a Deployment's image to a non-existent tag, observe the rollout get stuck, and explain why the old pods keep serving traffic.
+A:kubectl set image deployment/web nginx=nginx:does-not-exist and deploymnet downs not turn off old pods until new once are ready
+
+Q: Use a label selector to list only the pods belonging to one Deployment, and explain the Deployment →
+ReplicaSet → Pod selector relationship
+
+A: A Deployment uses a label selector (for example, app=web) to manage its ReplicaSet. The ReplicaSet uses the same selector to create and manage Pods with matching labels, forming the relationship: Deployment → ReplicaSet → Pods.
+kubectl get pods -l app=web
+
+Q: Expose a Deployment with kubectl expose, then explain what object was created and how its selector was derived.
+A: kubectl expose deployment web --port=80 --target-port=80
+This creates a Service object (default type: ClusterIP) that provides a stable network endpoint for the Pods managed by the Deployment.
+
+Q: Add a sidecar (second) container to a Deployment's pod template and explain how the two containers share the pod network and volumes
+A:
+spec:
+  containers:
+  - image: docker.io/library/nginx:1.27
+    imagePullPolicy: IfNotPresent
+    name: nginx
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+  - name: sidecar
+    image: busybox
+    command: ["sh", "-c", "while true; do sleep 30; done"]
+
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+
+Q: Write a Deployment manifest for httpd:2.4 with 2 replicas, a named container port, and a nodeSelector; explain why it stays Pending if no node matches.
+A:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpd-deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: httpd
+  template:
+    metadata:
+      labels:
+        app: httpd
+    spec:
+      nodeSelector:
+        disktype: ssd
+      containers:
+      - name: httpd
+        image: httpd:2.4
+        ports:
+        - name: http
+          containerPort: 80
+
+If no node has the label disktype=ssd, the Pods will remain in the Pending state because the scheduler cannot find a node that matches the nodeSelector requirement.
+
+Q: Create a bare Pod (no controller) running busybox that sleeps, then explain what happens when you delete it versus a Deployment-managed pod.
+A:
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-sleep
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    command: ["sleep", "3600"]
+kubectl apply -f busybox-pod.yaml
+
+A bare Pod is not managed by any controller, so when it is deleted, it is gone permanently and Kubernetes does not recreate it. A Deployment-managed Pod is owned by a ReplicaSet, so if you delete the Pod, the ReplicaSet automatically creates a replacement Pod to maintain the desired number of replicas.
+
+Q: Write a StatefulSet for redis:7 with 3 replicas plus a headless Service, and show the stable pod names and
+per-pod DNS records
+
+A: 
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7
+        ports:
+        - containerPort: 6379
+
+Q: 17. Create a DaemonSet running a busybox agent and explain why exactly one pod runs per node.
+A:
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: busybox-agent
+spec:
+  selector:
+    matchLabels:
+      app: busybox-agent
+  template:
+    metadata:
+      labels:
+        app: busybox-agent
+    spec:
+      containers:
+      - name: busybox
+        image: busybox
+        command: ["sh", "-c", "while true; do sleep 30; done"]
+A DaemonSet ensures that one Pod is scheduled on every eligible node in the cluster. When a new node is added, the DaemonSet automatically creates a Pod on that node, and when a node is removed, the corresponding Pod is deleted.
+
+Q: Create a Job using busybox/perl that computes something once and completes; show COMPLETIONS and
+read the result from logs
+
+A: apiVersion: batch/v1
+kind: Job
+metadata:
+  name: calculate
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: busybox
+        image: docker.io/library/busybox:latest
+        command:
+        - sh
+        - -c
+        - "echo $((123 * 456))"
+
+kubectl logs job/calculate
+kubectl get jobs
+
+Q: Create a CronJob that prints the date every minute; show how to suspend it and how to list the Jobs it
+spawns.
+A:
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: print-date
+spec:
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: busybox
+            image: docker.io/library/busybox:latest
+            command:
+            - sh
+            - -c
+            - date
+kubectl apply -f cronjob.yaml
+kubectl get cronjobs
+kubectl logs job/<job-name>
+
+Q:20. Manually run a Job from an existing CronJob (kubectl create job --from=cronjob/...) to test it on demand.
+A: 
+kubectl create job test-print-date --from=cronjob/print-date
+kubectl get jobs
+kubectl logs job/test-print-date
+
+Q:21. Show that a StatefulSet creates and terminates pods in order, and contrast this with a Deployment.
+A:
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: docker.io/library/redis:7
+        ports:
+        - containerPort: 6379
+
+kubectl get sts
+kubectl get pods
+
+šprati: kubectl get pods -w
+brise da s emoze pratit: kubectl scale statefulset redis --replicas=0
+
+Q: Create a multi-container Pod where two containers share an emptyDir — one writes a file, the other reads it.
+Prove it's shared.
+
+A:
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shared-volume-pod
+spec:
+  volumes:
+  - name: shared-data
+    emptyDir: {}
+
+  containers:
+  - name: writer
+    image: docker.io/library/busybox:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "Hello from writer container" > /shared/message.txt
+      sleep 3600
+    volumeMounts:
+    - name: shared-data
+      mountPath: /shared
+
+  - name: reader
+    image: docker.io/library/busybox:latest
+    command:
+    - sh
+    - -c
+    - sleep 3600
+    volumeMounts:
+    - name: shared-data
+      mountPath: /shared
+proof: kubectl exec shared-volume-pod -c writer -- cat /shared/message.txt
+
+read s file from container: kubectl exec shared-volume-pod -c reader -- cat /shared/message.txt
+
+Q: List the StorageClasses, PVs and PVCs
+A: kubectl get sc,pv,pvc
+
+Q: 24. Mount a ConfigMap as a volume so each key becomes a file, and verify the contents inside the pod.
+A: 
+kubectl create configmap app-config --from-literal=config.txt="Hello ConfigMap" --from-literal=db.txt="mysql"
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-pod
+spec:
+  containers:
+  - name: busybox
+    image: docker.io/library/busybox:latest
+    command: ["sh", "-c", "sleep 3600"]
+    volumeMounts:
+    - name: config-volume
+      mountPath: /etc/config
+
+  volumes:
+  - name: config-volume
+    configMap:
+      name: app-config
+
+kubectl apply -f configmap-pod.yaml
+kubectl exec configmap-pod -- ls /etc/config
+kubectl exec configmap-pod -- cat /etc/config/config.txt
+kubectl exec configmap-pod -- cat /etc/config/db.txt
+
+Q: 24. Mount a ConfigMap as a volume so each key becomes a file, and verify the contents inside the pod.
+A:
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-subpath
+spec:
+  containers:
+  - name: busybox
+    image: docker.io/library/busybox:latest
+    command: ["sh", "-c", "sleep 3600"]
+    volumeMounts:
+    - name: config-volume
+      mountPath: /etc/myapp/config.txt
+      subPath: config.txt
+
+  volumes:
+  - name: config-volume
+    configMap:
+      name: app-config
+kubectl exec configmap-subpath -- cat /etc/myapp/config.txt
+
